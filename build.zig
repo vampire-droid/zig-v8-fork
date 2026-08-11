@@ -24,6 +24,7 @@ fn addDepotToolsToPath(step: *std.Build.Step.Run, depot_tools_dir: []const u8) v
 }
 
 const GnArgs = struct {
+    shared: bool,
     is_asan: bool,
     is_tsan: bool,
     is_debug: bool,
@@ -73,6 +74,12 @@ const GnArgs = struct {
             else => {},
         }
 
+        if (self.shared) {
+            // Chromium's -fvisibility=hidden would otherwise leave every binding
+            // symbol STV_HIDDEN, so the .so would export nothing.
+            try args.appendSlice(gpa, "c_v8_shared=true\n");
+        }
+
         return gpa.dupe(u8, args.items);
     }
 };
@@ -82,7 +89,10 @@ pub fn build(b: *std.Build) !void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    const shared_v8 = b.option(bool, "shared_v8", "Link V8 as a shared library") orelse false;
+
     const gn_args = GnArgs{
+        .shared = shared_v8,
         .is_debug = optimize == .Debug,
         .symbol_level = b.option(u8, "symbol_level", "Symbol level") orelse if (optimize == .Debug) 1 else 0,
         .is_asan = b.option(bool, "is_asan", "Address sanitizer") orelse false,
@@ -121,7 +131,7 @@ pub fn build(b: *std.Build) !void {
         prepare_step.dependOn(bootstrapped_v8.step);
 
         // Otherwise, go through build process.
-        break :blk try buildV8(b, v8_dir, depot_tools_dir, bootstrapped_v8, target, gn_args);
+        break :blk try buildV8(b, v8_dir, depot_tools_dir, bootstrapped_v8, target, gn_args, shared_v8);
     };
 
     // Fix dependency graph: build_opts generating options.zig must wait for V8 to finish.
@@ -151,7 +161,7 @@ pub fn build(b: *std.Build) !void {
     v8_module.addImport("binding", binding_module);
     v8_module.addImport("default_exports", build_opts.createModule());
 
-    v8_module.addObjectFile(built_v8.libc_v8_path);
+    linkBuiltV8(v8_module, built_v8);
 
     switch (target.result.os.tag) {
         .macos => {
@@ -178,7 +188,7 @@ pub fn build(b: *std.Build) !void {
         test_module.addImport("binding", binding_module);
         test_module.addImport("default_exports", build_opts.createModule());
 
-        test_module.addObjectFile(built_v8.libc_v8_path);
+        linkBuiltV8(test_module, built_v8);
 
         switch (target.result.os.tag) {
             .macos => {
@@ -193,6 +203,16 @@ pub fn build(b: *std.Build) !void {
         const tests_step = b.step("test", "Run unit tests");
         tests_step.dependOn(&run_tests.step);
     }
+}
+
+fn linkBuiltV8(mod: *std.Build.Module, built_v8: BuiltV8) void {
+    const shared_dir = built_v8.shared_dir orelse {
+        mod.addObjectFile(built_v8.libc_v8_path);
+        return;
+    };
+    mod.addLibraryPath(shared_dir);
+    mod.addRPath(shared_dir);
+    mod.linkSystemLibrary("c_v8", .{});
 }
 
 const V8BootstrapResult = struct {
@@ -409,6 +429,8 @@ fn bootstrapV8(
 const BuiltV8 = struct {
     step: *std.Build.Step,
     libc_v8_path: LazyPath,
+    // Directory holding libc_v8.so, set only for shared builds.
+    shared_dir: ?LazyPath = null,
 };
 
 fn buildV8(
@@ -418,6 +440,7 @@ fn buildV8(
     bootstrapped_v8: V8BootstrapResult,
     target: std.Build.ResolvedTarget,
     gn_args: GnArgs,
+    shared_v8: bool,
 ) !BuiltV8 {
     const io = b.graph.io;
     const v8_dir_lazy_path: LazyPath = .{ .cwd_relative = v8_dir };
@@ -435,6 +458,8 @@ fn buildV8(
 
     // Bootstrap marker is shared across profiles, so compare staged sources
     // directly against this profile's libc_v8.a to track freshness per-profile.
+    const libc_v8_so_path = b.fmt("{s}/obj/zig/libc_v8.so", .{out_dir});
+
     const needs_build = bootstrapped_v8.needs_build or blk: {
         const lib_stat = std.Io.Dir.cwd().statFile(io, b.fmt("{s}/{s}", .{ v8_dir, libc_v8_path }), .{}) catch break :blk true;
         for (staged_files) |f| {
@@ -444,7 +469,16 @@ fn buildV8(
         break :blk false;
     };
 
+    // The shared object is relinked whenever the archive it wraps is rebuilt,
+    // and whenever it is missing (the archive can be up to date on its own).
+    const needs_shared_link = shared_v8 and (needs_build or blk: {
+        const so_stat = std.Io.Dir.cwd().statFile(io, b.fmt("{s}/{s}", .{ v8_dir, libc_v8_so_path }), .{}) catch break :blk true;
+        const lib_stat = std.Io.Dir.cwd().statFile(io, b.fmt("{s}/{s}", .{ v8_dir, libc_v8_path }), .{}) catch break :blk true;
+        break :blk lib_stat.mtime.nanoseconds > so_stat.mtime.nanoseconds;
+    });
+
     const final_step = b.step("build_v8_core", "Build V8 core");
+    var last_step: *std.Build.Step = undefined;
 
     if (needs_build) {
         const gn_run = b.addSystemCommand(&.{
@@ -470,12 +504,39 @@ fn buildV8(
         addDepotToolsToPath(ninja_run, depot_tools_dir);
         ninja_run.step.dependOn(&gn_run.step);
         final_step.dependOn(&ninja_run.step);
+        last_step = &ninja_run.step;
     } else {
         final_step.dependOn(bootstrapped_v8.step);
+        last_step = bootstrapped_v8.step;
+    }
+
+    if (needs_shared_link) {
+        // Chromium's bundled lld is the only linker here that understands the
+        // CREL relocations in the archive; resolving them into a shared object
+        // is the whole point of this path.
+        const link_shared = b.addSystemCommand(&.{
+            b.fmt("{s}/third_party/llvm-build/Release+Asserts/bin/clang++", .{v8_dir}),
+            "-shared",
+            "-fuse-ld=lld",
+            "-nostdlib++",
+            "-o",
+            libc_v8_so_path,
+            b.fmt("-Wl,--version-script={s}", .{b.pathFromRoot("build-tools/v8_exports.map")}),
+            "-Wl,--whole-archive",
+            libc_v8_path,
+            "-Wl,--no-whole-archive",
+            "-lpthread",
+            "-ldl",
+            "-lm",
+        });
+        link_shared.setCwd(v8_dir_lazy_path);
+        link_shared.step.dependOn(last_step);
+        final_step.dependOn(&link_shared.step);
     }
 
     return BuiltV8{
         .step = final_step,
         .libc_v8_path = full_libc_v8_lazy_path,
+        .shared_dir = if (shared_v8) v8_dir_lazy_path.path(b, b.fmt("{s}/obj/zig", .{out_dir})) else null,
     };
 }
