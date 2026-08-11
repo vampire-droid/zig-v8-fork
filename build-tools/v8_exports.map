@@ -1,0 +1,15 @@
+/*
+ * Export only the C binding surface. Without this, --whole-archive on a
+ * complete_static_lib exports ~110k symbols, including Chromium's allocator
+ * shim (malloc/free/operator new). libc_v8.so precedes libc.so.6 in the search
+ * order, so those interpose the allocator for the whole process, and memory
+ * allocated by one allocator ends up freed by the other.
+ */
+{
+  global:
+    v8__*;
+    v8_inspector__*;
+    std__*;
+    allocString;
+  local: *;
+};
