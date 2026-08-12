@@ -78,6 +78,28 @@ jobs:
             zig build -Dtarget="${{ inputs.target }}" -Doptimize=ReleaseSafe build-v8
           fi
 
+      # zig's self-hosted linker doesn't work when we statically link V8. I'm
+      # not sure what the issue is (I believe there are multiple issues). But
+      # It does work if we dynamically link it. Claude sais it has something
+      # to do with CREL reloations which Zig can't do but the bundled lld here
+      # handles fine. Maybe as a separate issue (or maybe it's the same) there's
+      # also problems caused by the allocator shim. Whatever the case, this step
+      # exists to create a dynamic library that can be used with browser's
+      # -Ddev_fast builds.
+      - name: Link shared v8 library
+        if: inputs.target == 'x86_64-linux' && inputs.build_type == 'release'
+        shell: bash
+        run: |
+          V8_DIR=${{ inputs.lp_cache }}/v8-${{ env.V8_REVISION }}
+          V8_LIB_PATH=($V8_DIR/out/${{ env.OS }}/${{ inputs.build_type }}_*/obj/zig/libc_v8.a)
+          "$V8_DIR/third_party/llvm-build/Release+Asserts/bin/clang++" \
+            -shared -fuse-ld=lld -nostdlib++ \
+            -o "libc_v8_${{ env.V8_REVISION }}_${{ env.OS }}_${{ env.ARCH }}.so" \
+            -Wl,-soname,libc_v8.so \
+            -Wl,--version-script=build-tools/v8_exports.map \
+            -Wl,--whole-archive "${V8_LIB_PATH[0]}" -Wl,--no-whole-archive \
+            -lpthread -ldl -lm
+
       - name: Find v8 library
         shell: bash
         run: |
@@ -96,7 +118,7 @@ jobs:
         uses: ncipollo/release-action@v1
         with:
           allowUpdates: true
-          artifacts: libc_v8_*.a
+          artifacts: libc_v8_*.a,libc_v8_*.so
           # Semver convention: hyphenated tags (v0.4.8-slim.0) are prereleases,
           # so experimental builds never become the "latest" release.
           prerelease: ${{ contains(github.ref_name, '-') }}

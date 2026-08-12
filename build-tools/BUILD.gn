@@ -1,12 +1,6 @@
 # Copyright 2018-2019 the Deno authors. All rights reserved. MIT license.
 # Based on https://github.com/denoland/rusty_v8/blob/main/BUILD.gn
 
-declare_args() {
-  # Build the bindings for inclusion in libc_v8.so rather than libc_v8.a.
-  # Linux dev builds only; see -Dshared_v8 in build.zig.
-  c_v8_shared = false
-}
-
 static_library("c_v8") {
   complete_static_lib = true
 
@@ -30,14 +24,10 @@ config("c_v8_config") {
     "//:toolchain",
     "//:features",
   ]
-  cflags = []
-
-  if (c_v8_shared) {
-    # Chromium compiles with -fvisibility=hidden, which leaves every binding
-    # symbol STV_HIDDEN and therefore unexportable from a shared library. This
-    # config only applies to binding.cpp, not to the V8 deps.
-    cflags += [ "-fvisibility=default" ]
-  }
+  # This config only applies to binding.cpp, not to the V8 deps. It has no
+  # impact when we link statically. Having it always on means we can relink
+  # libc_v8.a into an .so (where it does matter).
+  cflags = [ "-fvisibility=default" ]
 
   # We need these directories in the search path to be able to include some
   # internal V8 headers.
