@@ -1122,6 +1122,12 @@ const v8::String* v8__Value__ToDetailString(
     return maybe_local_to_ptr(self.ToDetailString(ptr_to_local(&ctx)));
 }
 
+const v8::BigInt* v8__Value__ToBigInt(
+        const v8::Value& self,
+        const v8::Context& ctx) {
+    return maybe_local_to_ptr(self.ToBigInt(ptr_to_local(&ctx)));
+}
+
 bool v8__Value__BooleanValue(
         const v8::Value& self,
         v8::Isolate* isolate) {
@@ -1225,8 +1231,28 @@ bool v8__Value__IsBigIntObject(const v8::Value& self) { return self.IsBigIntObje
 
 bool v8__Value__IsDate(const v8::Value& self) { return self.IsDate(); }
 
+bool v8__Value__IsMap(const v8::Value& self) { return self.IsMap(); }
+
+bool v8__Value__IsSet(const v8::Value& self) { return self.IsSet(); }
+
+bool v8__Value__IsWeakMap(const v8::Value& self) { return self.IsWeakMap(); }
+
+bool v8__Value__IsWeakSet(const v8::Value& self) { return self.IsWeakSet(); }
+
+bool v8__Value__IsRegExp(const v8::Value& self) { return self.IsRegExp(); }
+
+bool v8__Value__IsProxy(const v8::Value& self) { return self.IsProxy(); }
+
+bool v8__Value__IsGeneratorObject(const v8::Value& self) { return self.IsGeneratorObject(); }
+
 const v8::Value* v8__Date__New(const v8::Context* context, double time) {
     return maybe_local_to_ptr(v8::Date::New(ptr_to_local(context), time));
+}
+
+double v8__Date__ValueOf(const v8::Date& self) { return self.ValueOf(); }
+
+bool v8__Value__StrictEquals(const v8::Value& self, const v8::Value& other) {
+    return self.StrictEquals(ptr_to_local(&other));
 }
 
 void v8__Value__InstanceOf(
