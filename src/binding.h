@@ -51,6 +51,7 @@ typedef Value Promise;
 typedef Value Name;
 typedef Value PromiseResolver;
 typedef Value RegExp;
+typedef Value Date;
 typedef enum CompileOptions {
     kNoCompileOptions = 0,
     kConsumeCodeCache = 1,
@@ -569,6 +570,9 @@ String* v8__Value__ToString(
 const String* v8__Value__ToDetailString(
     const Value* self,
     const Context* ctx);
+const BigInt* v8__Value__ToBigInt(
+    const Value* self,
+    const Context* ctx);
 bool v8__Value__BooleanValue(
     const Value* self,
     Isolate* isolate);
@@ -622,7 +626,16 @@ bool v8__Value__IsNativeError(const Value* self);
 bool v8__Value__IsBigInt(const Value* self);
 bool v8__Value__IsBigIntObject(const Value* self);
 bool v8__Value__IsDate(const Value* self);
+bool v8__Value__IsMap(const Value* self);
+bool v8__Value__IsSet(const Value* self);
+bool v8__Value__IsWeakMap(const Value* self);
+bool v8__Value__IsWeakSet(const Value* self);
+bool v8__Value__IsRegExp(const Value* self);
+bool v8__Value__IsProxy(const Value* self);
+bool v8__Value__IsGeneratorObject(const Value* self);
 const Value* v8__Date__New(const Context* context, double time);
+double v8__Date__ValueOf(const Date* self);
+bool v8__Value__StrictEquals(const Value* self, const Value* other);
 void v8__Value__InstanceOf(
     const Value* self,
     const Context* ctx,
