@@ -104,37 +104,47 @@ pub fn build(b: *std.Build) !void {
         try std.Io.Dir.cwd().createDirPath(io, cache_root);
     };
 
-    const prebuilt_v8_path = b.option([]const u8, "prebuilt_v8_path", "Path to a prebuilt libc_v8.a or libc_v8.so");
+    const prebuilt_v8_path = b.option(LazyPath, "prebuilt_v8_path", "Path to a prebuilt libc_v8.a or libc_v8.so; may be a generated file");
 
     const v8_dir = b.fmt("{s}/v8-{s}", .{ cache_root, V8_VERSION });
     const depot_tools_dir = b.fmt("{s}/depot_tools-{s}", .{ cache_root, V8_VERSION });
 
-    const built_v8 = if (prebuilt_v8_path) |raw_path| blk: {
-        // Use prebuilt_v8 if available. A .so is linked shared (the exe
-        // records DT_NEEDED "libc_v8.so", so the file must keep that name);
-        // anything else is an archive and links statically. The path is
-        // resolved to an absolute one so the rpath baked into the exe does
-        // not depend on the directory it is run from.
-        const is_shared_lib = std.mem.endsWith(u8, raw_path, ".so");
-        if (is_shared_lib and !std.mem.eql(u8, std.fs.path.basename(raw_path), "libc_v8.so")) {
-            std.debug.print("prebuilt_v8_path: a shared V8 must be named libc_v8.so (got {s})\n", .{raw_path});
+    const built_v8 = if (prebuilt_v8_path) |lazy| blk: {
+        const name: []const u8 = switch (lazy) {
+            .cwd_relative => |p| std.fs.path.basename(p),
+            .src_path => |sp| std.fs.path.basename(sp.sub_path),
+            .dependency => |d| std.fs.path.basename(d.sub_path),
+            .generated => "(generated archive)",
+        };
+        const is_shared_lib = std.mem.endsWith(u8, name, ".so");
+        if (is_shared_lib and !std.mem.eql(u8, name, "libc_v8.so")) {
+            std.debug.print("prebuilt_v8_path: a shared V8 must be named libc_v8.so (got {s})\n", .{name});
             return error.PrebuiltV8BadName;
         }
         if (shared_v8 and !is_shared_lib) {
-            std.debug.print("-Dshared_v8 needs a libc_v8.so, but prebuilt_v8_path points at an archive ({s})\n", .{raw_path});
+            std.debug.print("-Dshared_v8 needs a libc_v8.so, but prebuilt_v8_path points at an archive ({s})\n", .{name});
             return error.PrebuiltV8NotShared;
         }
-        const path = std.Io.Dir.cwd().realPathFileAlloc(io, raw_path, b.allocator) catch |err| {
-            std.debug.print("prebuilt_v8_path: cannot resolve {s}: {t}\n", .{ raw_path, err });
-            return err;
-        };
+        var libc_v8_path = lazy;
+        if (is_shared_lib) {
+            const raw_path = switch (lazy) {
+                .cwd_relative => |p| p,
+                .src_path => |sp| sp.owner.pathFromRoot(sp.sub_path),
+                .dependency, .generated => {
+                    std.debug.print("prebuilt_v8_path: a shared V8 must be a plain path\n", .{});
+                    return error.PrebuiltV8NotShared;
+                },
+            };
+            const path = std.Io.Dir.cwd().realPathFileAlloc(io, raw_path, b.allocator) catch |err| {
+                std.debug.print("prebuilt_v8_path: cannot resolve {s}: {t}\n", .{ raw_path, err });
+                return err;
+            };
+            libc_v8_path = .{ .cwd_relative = path };
+        }
         break :blk BuiltV8{
             .step = b.step("prebuilt_v8", "Use prebuilt v8"),
-            .libc_v8_path = .{ .cwd_relative = path },
-            .shared_dir = if (is_shared_lib)
-                .{ .cwd_relative = std.fs.path.dirname(path) orelse "." }
-            else
-                null,
+            .libc_v8_path = libc_v8_path,
+            .shared_dir = if (is_shared_lib) libc_v8_path.dirname() else null,
         };
     } else blk: {
         const bootstrapped_depot_tools = try bootstrapDepotTools(b, depot_tools_dir);
