@@ -17,18 +17,3 @@ jobs:
       runner: macos-26
       target: aarch64-macos
       build_type: release
-  
-  release:
-    needs: build-aarch64-macos
-    runs-on: ubuntu-latest
-    steps:
-      - name: Download artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: aarch64-macos
-          path: dist
-
-      - name: Create/update release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: dist/**/*
